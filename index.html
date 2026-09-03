@@ -336,10 +336,6 @@ input{font-family:var(--texto);}
       </div>
 
       <div class="lobby-players" id="lobbyPlayers"></div>
-      <div id="lobbyCountdown" style="display:none;text-align:center;margin:6px 0 2px;">
-        <div style="font-family:var(--display);font-size:38px;color:var(--amarillo);" id="lobbyCountdownNum">15</div>
-        <small style="color:var(--gris)">Arranca automático (mín. 2, máx. 5 jugadores)</small>
-      </div>
 
       <div class="row-gap" style="margin-top:10px;">
         <button class="btn btn-outline flex1" data-go="menu">Salir</button>
@@ -654,7 +650,7 @@ const S = {
   track:TRACKS[0],
   championshipStep:0,  // en modo 'jugar', índice de carrera dentro del campeonato
   championshipOrder:[],// orden de pistas del campeonato actual
-  online:{code:null, channel:null, isHost:false, players:[], myId:null, countdownStarted:false, countdownTimer:null}
+  online:{code:null, channel:null, isHost:false, players:[], myId:null}
 };
 
 function goto(id){
@@ -846,15 +842,14 @@ document.getElementById("btnJoinCode").addEventListener("click", ()=>{
 });
 
 function leaveOnlineIfAny(){
-  if(S.online.countdownTimer){ clearInterval(S.online.countdownTimer); }
   if(S.online.channel){ supa.removeChannel(S.online.channel); }
-  S.online = {code:null, channel:null, isHost:false, players:[], myId:null, countdownStarted:false, countdownTimer:null};
-  const cd = document.getElementById("lobbyCountdown");
-  if(cd) cd.style.display="none";
+  S.online = {code:null, channel:null, isHost:false, players:[], myId:null};
 }
 
 function unirseAPartidaPublica(){
-  unirseASala("PUBLICA", false);
+  // La sala pública no conoce de antemano quién será host.
+  // El primer jugador que se conecta será elegido host automáticamente.
+  unirseASala("PUBLICA", "auto");
 }
 
 function unirseASala(code, generandoYo){
@@ -875,17 +870,18 @@ function unirseASala(code, generandoYo){
     iniciarCarreraOnline(payload.payload);
   });
 
-  channel.on("broadcast",{event:"countdown_start"}, (payload)=>{
-    iniciarCuentaRegresivaLobby(payload.payload.endAt, code);
-  });
-
-  channel.on("broadcast",{event:"countdown_cancel"}, ()=>{
-    detenerCuentaRegresivaLobby();
-  });
-
   channel.subscribe(async (status)=>{
     if(status === "SUBSCRIBED"){
-      const soyHost = generandoYo;
+      // En salas privadas, quien genera el código es el host.
+      // En PUBLICA, el primer jugador conectado será el host.
+      let soyHost = generandoYo === true;
+
+      if(code === "PUBLICA" && generandoYo === "auto"){
+        const state = channel.presenceState();
+        const jugadoresActuales = Object.values(state).flat().filter(Boolean);
+        soyHost = jugadoresActuales.length === 0;
+      }
+
       S.online.isHost = soyHost;
       await channel.track({
         id:S.online.myId, nombre:S.user.username, driverId:S.driver.id,
@@ -895,13 +891,6 @@ function unirseASala(code, generandoYo){
       document.getElementById("lobbyTitle").textContent = code==="PUBLICA" ? "Buscando rivales…" : "Sala privada: "+code;
     }
   });
-}
-
-function esHostDePublica(){
-  const j = S.online.players;
-  if(!j.length) return false;
-  const ordenado = j.slice().sort((a,b)=> a.id.localeCompare(b.id));
-  return ordenado[0].id === S.online.myId;
 }
 
 function renderLobbyPlayers(jugadores, code){
@@ -920,60 +909,30 @@ function renderLobbyPlayers(jugadores, code){
   if(S.online.isHost && jugadores.length>=2){
     document.getElementById("btnLobbyStart").style.display="inline-flex";
   }
-
-  if(code==="PUBLICA"){
-    const soyHost = esHostDePublica();
-    if(jugadores.length>=5){
-      detenerCuentaRegresivaLobby();
-      if(soyHost) lanzarCarreraOnline();
-    } else if(jugadores.length>=2){
-      if(soyHost && !S.online.countdownStarted){
-        S.online.countdownStarted = true;
-        const endAt = Date.now() + 15000;
-        S.online.channel.send({type:"broadcast", event:"countdown_start", payload:{endAt}});
-        iniciarCuentaRegresivaLobby(endAt, code);
-      }
-    } else {
-      // menos de 2 jugadores: si había cuenta regresiva corriendo, se cancela
-      if(S.online.countdownStarted){
-        S.online.countdownStarted = false;
-        if(soyHost) S.online.channel.send({type:"broadcast", event:"countdown_cancel"});
-        detenerCuentaRegresivaLobby();
-      }
-    }
+  if(code==="PUBLICA" && jugadores.length>=5 && S.online.isHost){
+    lanzarCarreraOnline();
   }
-}
-
-function iniciarCuentaRegresivaLobby(endAt, code){
-  detenerCuentaRegresivaLobby();
-  const cont = document.getElementById("lobbyCountdown");
-  const num = document.getElementById("lobbyCountdownNum");
-  cont.style.display = "block";
-  S.online.countdownTimer = setInterval(()=>{
-    const restante = Math.max(0, Math.ceil((endAt-Date.now())/1000));
-    num.textContent = restante;
-    if(restante<=0){
-      clearInterval(S.online.countdownTimer);
-      S.online.countdownTimer = null;
-      if(code==="PUBLICA" && esHostDePublica() && S.online.players.length>=2){
-        lanzarCarreraOnline();
-      }
-    }
-  }, 250);
-}
-function detenerCuentaRegresivaLobby(){
-  if(S.online.countdownTimer){ clearInterval(S.online.countdownTimer); S.online.countdownTimer=null; }
-  const cont = document.getElementById("lobbyCountdown");
-  if(cont) cont.style.display="none";
 }
 
 document.getElementById("btnLobbyStart").addEventListener("click", lanzarCarreraOnline);
 
 function lanzarCarreraOnline(){
   const track = S.track;
+  const payload = {
+    trackId:track.id,
+    jugadores:[...S.online.players],
+    seed:Date.now()
+  };
+
+  // El host también debe iniciar localmente: broadcast no se usa
+  // como mecanismo para arrancar la propia pestaña del host.
+  iniciarCarreraOnline(payload);
+
+  // Avisamos a los demás jugadores de la misma sala.
   S.online.channel.send({
-    type:"broadcast", event:"start",
-    payload:{ trackId:track.id, jugadores:S.online.players, seed:Date.now() }
+    type:"broadcast",
+    event:"start",
+    payload
   });
 }
 
