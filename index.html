@@ -227,6 +227,10 @@ input{font-family:var(--texto);}
 
       <form id="formLogin">
         <div class="field">
+          <label>Nombre de usuario</label>
+          <input type="text" id="loginUser" placeholder="Tu usuario" required maxlength="18">
+        </div>
+        <div class="field">
           <label>Gmail</label>
           <input type="email" id="loginEmail" placeholder="tuusuario@gmail.com" required>
         </div>
@@ -701,31 +705,56 @@ document.getElementById("formRegistro").addEventListener("submit", async (e)=>{
   const r = await DB.registrar(username, email, pass);
   if(r.error){ showAuthMsg(r.error, "err"); return; }
   S.user = r.user;
+  S.invitado = false;
+  guardarSesionLocal(S.user);
   showAuthMsg("Cuenta creada. ¡Bienvenido!", "ok");
   setTimeout(entrarAlMenu, 500);
 });
 
 document.getElementById("formLogin").addEventListener("submit", async (e)=>{
   e.preventDefault();
+  const username = document.getElementById("loginUser").value.trim();
   const email = document.getElementById("loginEmail").value.trim();
   const pass = document.getElementById("loginPass").value;
+
+  if(!username){
+    showAuthMsg("Escribí tu nombre de usuario.", "err");
+    return;
+  }
+  if(!esGmail(email)){
+    showAuthMsg("Tiene que ser un Gmail (terminado en @gmail.com).", "err");
+    return;
+  }
+
   showAuthMsg("Ingresando…");
   const r = await DB.login(email, pass);
   if(r.error){ showAuthMsg(r.error, "err"); return; }
+
+  // También comprobamos el usuario para evitar entrar con datos mezclados.
+  if(r.user.username.toLowerCase() !== username.toLowerCase()){
+    showAuthMsg("El usuario no coincide con ese Gmail.", "err");
+    return;
+  }
+
   S.user = r.user;
+  S.invitado = false;
+  guardarSesionLocal(S.user);
   showAuthMsg("");
   entrarAlMenu();
 });
 
 document.getElementById("btnInvitado").addEventListener("click", ()=>{
+  localStorage.removeItem(SESSION_KEY);
   S.invitado = true;
   S.user = {id:"invitado_"+Math.random().toString(36).slice(2,8), username:"Invitado", email:null};
   entrarAlMenu();
 });
 
-document.getElementById("btnLogout").addEventListener("click", ()=>{
-  S.user = null; S.invitado=false;
-  if(supa) supa.auth.signOut();
+document.getElementById("btnLogout").addEventListener("click", async ()=>{
+  S.user = null;
+  S.invitado = false;
+  localStorage.removeItem(SESSION_KEY);
+  if(supa) await supa.auth.signOut();
   goto("auth");
 });
 
@@ -733,6 +762,65 @@ function entrarAlMenu(){
   document.getElementById("menuUser").textContent = S.user.username;
   document.getElementById("menuAvatar").textContent = S.user.username.charAt(0).toUpperCase();
   goto("menu");
+}
+
+/* ---------- SESIÓN RECORDADA ---------- */
+const SESSION_KEY = "apexcircuit_session_v1";
+
+function guardarSesionLocal(user){
+  if(!user || !user.id || !user.username || !user.email) return;
+  localStorage.setItem(SESSION_KEY, JSON.stringify({
+    id:user.id,
+    username:user.username,
+    email:user.email
+  }));
+}
+
+function borrarSesionLocal(){
+  localStorage.removeItem(SESSION_KEY);
+}
+
+async function restaurarSesion(){
+  // Invitados nunca quedan logueados automáticamente.
+  if(supa){
+    try{
+      const {data} = await supa.auth.getSession();
+      if(data && data.session && data.session.user){
+        const authUser = data.session.user;
+        const {data:perfil} = await supa
+          .from("carreras_perfiles")
+          .select("*")
+          .eq("id", authUser.id)
+          .single();
+
+        S.user = {
+          id:authUser.id,
+          username:perfil?.username || authUser.email.split("@")[0],
+          email:authUser.email
+        };
+        S.invitado = false;
+        entrarAlMenu();
+        return;
+      }
+    }catch(err){
+      console.warn("No se pudo restaurar la sesión de Supabase:", err);
+    }
+  }
+
+  // Fallback local: solo restauramos los datos públicos del usuario.
+  try{
+    const guardada = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if(guardada && guardada.id && guardada.username && guardada.email){
+      S.user = guardada;
+      S.invitado = false;
+      entrarAlMenu();
+      return;
+    }
+  }catch(err){
+    localStorage.removeItem(SESSION_KEY);
+  }
+
+  goto("auth");
 }
 
 /* ---------- SELECCION ---------- */
@@ -1467,6 +1555,7 @@ document.documentElement.style.setProperty("--auth-bg", "linear-gradient(160deg,
 document.documentElement.style.setProperty("--menu-bg", "linear-gradient(160deg,#1b1c22,#0c0d10)");
 
 resizeCanvas();
+restaurarSesion();
 </script>
 </body>
 </html>
