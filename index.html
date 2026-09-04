@@ -184,6 +184,9 @@ input{font-family:var(--texto);}
 .dpad.mobile{display:flex;}
 .dpad button{pointer-events:auto;width:58px;height:58px;background:rgba(20,21,25,.7);border:1px solid var(--linea);color:var(--hueso);font-size:24px;border-radius:50%;}
 .dpad .steer, .dpad .throttle{display:flex;gap:10px;align-items:flex-end;}
+.vjoy-base{position:absolute;bottom:26px;left:26px;width:130px;height:130px;border-radius:50%;background:rgba(20,21,25,.55);border:1px solid var(--linea);display:none;touch-action:none;}
+.vjoy-base.show{display:block;}
+.vjoy-knob{position:absolute;width:56px;height:56px;left:37px;top:37px;border-radius:50%;background:rgba(244,228,9,.85);border:2px solid #14150f;pointer-events:none;transition:left .05s,top .05s;}
 
 /* ============================================================
    RESULTADOS
@@ -355,6 +358,17 @@ input{font-family:var(--texto);}
       <h2>Configuración</h2>
     </div>
     <div class="sub-body">
+      <div class="opt-row" style="flex-direction:column;align-items:stretch;">
+        <b>Modo de control</b>
+        <small>Elegí cómo manejar — el teclado (↑↓←→ o WASD) siempre funciona además de esto</small>
+        <div class="row-gap" style="margin-top:10px;">
+          <button class="btn btn-outline flex1" id="btnCtrlFlechas">🔼 Táctil: Flechas</button>
+          <button class="btn btn-outline flex1" id="btnCtrlCirculo">🕹️ Táctil: Círculo</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <div><b>Joystick / Mando USB o Bluetooth</b><small id="gamepadStatus">No se detectó ningún control conectado — enchufalo y movelo para activarlo</small></div>
+      </div>
       <div class="opt-row">
         <div><b>Sonido</b><small>Motor y efectos</small></div>
         <button class="switch on" id="swSound"></button>
@@ -388,6 +402,10 @@ input{font-family:var(--texto);}
       <div class="tuto-step">
         <div class="n">01</div>
         <div><b>Manejo</b><p><span class="key">↑ / W</span> acelerar · <span class="key">↓ / S</span> frenar/retroceder · <span class="key">← →</span> o <span class="key">A D</span> girar</p></div>
+      </div>
+      <div class="tuto-step">
+        <div class="n">01B</div>
+        <div><b>En celular</b><p>Desde Configuración elegís si querés manejar con flechas en pantalla o con un joystick circular (analógico). Si conectás un joystick o mando (USB o Bluetooth), el juego lo detecta solo y ya podés jugar con él, sin tocar nada.</p></div>
       </div>
       <div class="tuto-step">
         <div class="n">02</div>
@@ -439,6 +457,9 @@ input{font-family:var(--texto);}
         <button id="btnBrake">▼</button>
         <button id="btnGas">▲</button>
       </div>
+    </div>
+    <div class="vjoy-base" id="vjoyBase">
+      <div class="vjoy-knob" id="vjoyKnob"></div>
     </div>
   </section>
 
@@ -1049,7 +1070,7 @@ const keys = {};
 window.addEventListener("keydown", e=>{ keys[e.key.toLowerCase()]=true; });
 window.addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
 
-// controles táctiles
+// controles táctiles: botones tipo flecha
 function bindHold(id, key){
   const el = document.getElementById(id);
   const on = (e)=>{ e.preventDefault(); keys[key]=true; };
@@ -1059,7 +1080,125 @@ function bindHold(id, key){
 }
 bindHold("btnLeft","arrowleft"); bindHold("btnRight","arrowright");
 bindHold("btnGas","arrowup"); bindHold("btnBrake","arrowdown");
-if("ontouchstart" in window){ document.getElementById("dpad").classList.add("mobile"); }
+const esTactil = "ontouchstart" in window;
+
+/* ---------- preferencia de control táctil (flechas o círculo) ---------- */
+function cargarConfigControles(){
+  try{ return JSON.parse(localStorage.getItem("apexcircuit_controles"))||{tactil:"flechas"}; }
+  catch(e){ return {tactil:"flechas"}; }
+}
+function guardarConfigControles(c){ localStorage.setItem("apexcircuit_controles", JSON.stringify(c)); }
+let configControles = cargarConfigControles();
+
+function aplicarModoTactil(){
+  const dpadEl = document.getElementById("dpad");
+  const vjoyEl = document.getElementById("vjoyBase");
+  if(!esTactil){ dpadEl.classList.remove("mobile"); vjoyEl.classList.remove("show"); return; }
+  if(configControles.tactil === "circulo"){
+    dpadEl.classList.remove("mobile");
+    vjoyEl.classList.add("show");
+  } else {
+    dpadEl.classList.add("mobile");
+    vjoyEl.classList.remove("show");
+  }
+  ["btnCtrlFlechas","btnCtrlCirculo"].forEach(id=>{
+    const b = document.getElementById(id);
+    if(b) b.classList.remove("btn-primary");
+  });
+  const activo = configControles.tactil==="circulo" ? "btnCtrlCirculo" : "btnCtrlFlechas";
+  const bActivo = document.getElementById(activo);
+  if(bActivo) bActivo.classList.add("btn-primary");
+}
+document.getElementById("btnCtrlFlechas").addEventListener("click", ()=>{
+  configControles.tactil="flechas"; guardarConfigControles(configControles); aplicarModoTactil();
+});
+document.getElementById("btnCtrlCirculo").addEventListener("click", ()=>{
+  configControles.tactil="circulo"; guardarConfigControles(configControles); aplicarModoTactil();
+});
+aplicarModoTactil();
+
+/* ---------- joystick táctil circular (analógico) ---------- */
+const vjoyState = {active:false, dx:0, dy:0};
+(function(){
+  const base = document.getElementById("vjoyBase");
+  const knob = document.getElementById("vjoyKnob");
+  const RADIO = 65, RADIO_KNOB = 28;
+  let baseRect = null;
+
+  function mover(clientX, clientY){
+    if(!baseRect) baseRect = base.getBoundingClientRect();
+    const cx = baseRect.left + baseRect.width/2;
+    const cy = baseRect.top + baseRect.height/2;
+    let dx = clientX-cx, dy = clientY-cy;
+    const dist = Math.hypot(dx,dy);
+    if(dist > RADIO){ dx = dx/dist*RADIO; dy = dy/dist*RADIO; }
+    knob.style.left = (65+dx-RADIO_KNOB)+"px";
+    knob.style.top = (65+dy-RADIO_KNOB)+"px";
+    vjoyState.dx = dx/RADIO; vjoyState.dy = dy/RADIO;
+  }
+  function soltar(){
+    vjoyState.active=false; vjoyState.dx=0; vjoyState.dy=0;
+    knob.style.left="37px"; knob.style.top="37px";
+    baseRect = null;
+  }
+  base.addEventListener("touchstart",(e)=>{ e.preventDefault(); vjoyState.active=true; baseRect=base.getBoundingClientRect(); const t=e.touches[0]; mover(t.clientX,t.clientY); });
+  base.addEventListener("touchmove",(e)=>{ e.preventDefault(); if(!vjoyState.active) return; const t=e.touches[0]; mover(t.clientX,t.clientY); });
+  base.addEventListener("touchend",(e)=>{ e.preventDefault(); soltar(); });
+  base.addEventListener("touchcancel",(e)=>{ soltar(); });
+})();
+
+/* ---------- entrada unificada: teclado + táctil + joystick/mando físico ---------- */
+const inputState = {throttle:0, brake:0, steer:0};
+let gamepadConectado = false;
+function pollInput(){
+  let throttle=0, brake=0, steer=0;
+
+  // teclado (incluye los botones táctiles tipo flecha, que setean las mismas teclas)
+  if(keys["arrowup"]||keys["w"]) throttle = Math.max(throttle,1);
+  if(keys["arrowdown"]||keys["s"]) brake = Math.max(brake,1);
+  if(keys["arrowleft"]||keys["a"]) steer = -1;
+  if(keys["arrowright"]||keys["d"]) steer = 1;
+
+  // joystick táctil circular
+  if(vjoyState.active){
+    if(Math.abs(vjoyState.dx) > 0.12) steer = Math.max(-1, Math.min(1, vjoyState.dx));
+    if(vjoyState.dy < -0.1) throttle = Math.max(throttle, Math.min(1, -vjoyState.dy));
+    if(vjoyState.dy > 0.1) brake = Math.max(brake, Math.min(1, vjoyState.dy));
+  }
+
+  // joystick / mando físico (Gamepad API) — cualquier control USB o Bluetooth conectado
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let hayPad = false;
+  for(const gp of pads){
+    if(!gp) continue;
+    hayPad = true;
+    const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    if(Math.abs(ax) > 0.15) steer = ax;
+    const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
+    const lt = gp.buttons[6] ? gp.buttons[6].value : 0;
+    if(rt > 0.08) throttle = Math.max(throttle, rt);
+    if(lt > 0.08) brake = Math.max(brake, lt);
+    if(gp.buttons[0] && gp.buttons[0].pressed) throttle = 1;      // A / Cruz
+    if(gp.buttons[1] && gp.buttons[1].pressed) brake = 1;         // B / Círculo
+    if(gp.buttons[14] && gp.buttons[14].pressed) steer = -1;      // D-pad izq
+    if(gp.buttons[15] && gp.buttons[15].pressed) steer = 1;       // D-pad der
+  }
+  if(hayPad !== gamepadConectado){
+    gamepadConectado = hayPad;
+    const el = document.getElementById("gamepadStatus");
+    if(el){
+      const pads2 = navigator.getGamepads ? navigator.getGamepads() : [];
+      const activo = Array.from(pads2).find(g=>g);
+      el.textContent = hayPad ? ("🎮 Conectado: "+(activo && activo.id ? activo.id : "control")) : "No se detectó ningún control conectado — enchufalo y movelo para activarlo";
+    }
+  }
+
+  inputState.throttle = throttle;
+  inputState.brake = brake;
+  inputState.steer = steer;
+}
+window.addEventListener("gamepadconnected", ()=>{ pollInput(); });
+window.addEventListener("gamepaddisconnected", ()=>{ pollInput(); });
 
 function distToSegment(p, a, b){
   const abx=b.x-a.x, aby=b.y-a.y;
@@ -1187,6 +1326,7 @@ function lanzarLoopCarrera(){
 
 function updateRace(dt, now){
   if(!race) return;
+  pollInput();
   if(race.countdown>0){
     race.countdown -= dt;
     const msg = document.getElementById("hudMsg");
@@ -1239,13 +1379,10 @@ function updateAutoFisica(a, dt, track, esJugador){
 
   const enBox = puntoEnRect({x:a.x,y:a.y}, track.pitBox);
   if(esJugador){
-    if(keys["arrowup"]||keys["w"]) a.speed += ACC*dt;
-    if(keys["arrowdown"]||keys["s"]) a.speed -= ACC*1.3*dt;
-    let dir=0;
-    if(keys["arrowleft"]||keys["a"]) dir=-1;
-    if(keys["arrowright"]||keys["d"]) dir=1;
-    if(dir!==0 && Math.abs(a.speed)>4){
-      a.angle += dir*TURN*dt*Math.min(1, Math.abs(a.speed)/120) * (a.speed<0?-1:1);
+    a.speed += ACC*inputState.throttle*dt;
+    a.speed -= ACC*1.3*inputState.brake*dt;
+    if(Math.abs(inputState.steer)>0.05 && Math.abs(a.speed)>4){
+      a.angle += inputState.steer*TURN*dt*Math.min(1, Math.abs(a.speed)/120) * (a.speed<0?-1:1);
     }
   }
 
