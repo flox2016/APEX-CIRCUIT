@@ -1156,7 +1156,15 @@ function iniciarCarrera(jugadoresOnline){
   if(S.online.channel){
     S.online.channel.on("broadcast",{event:"pos"}, (payload)=>{
       const a = race.autos.find(x=>x.remId===payload.payload.id);
-      if(a){ a.x=payload.payload.x; a.y=payload.payload.y; a.angle=payload.payload.angle; a.lap=payload.payload.lap; }
+      if(a && !a.finished){ a.x=payload.payload.x; a.y=payload.payload.y; a.angle=payload.payload.angle; a.lap=payload.payload.lap; }
+    });
+    S.online.channel.on("broadcast",{event:"finish"}, (payload)=>{
+      const a = race.autos.find(x=>x.remId===payload.payload.id);
+      if(a && !a.finished){
+        a.finished = true;
+        a.finishTime = payload.payload.finishTime; // tiempo real que mandó ese jugador, no un cálculo nuestro
+        race.finishedOrder.push(a);
+      }
     });
   }
 
@@ -1195,12 +1203,17 @@ function updateRace(dt, now){
     if(a.isPlayer){
       updateAutoFisica(a, dt, track, true);
       race.ghostRecording.push({x:a.x,y:a.y,angle:a.angle,t:now-race.startTime});
+      checarVueltas(a, track, now);
     } else if(a.esBot){
       updateAutoIA(a, dt, track);
+      checarVueltas(a, track, now);
     } else if(a.esRemoto){
-      // posición llega por broadcast, acá solo interpolamos levemente
+      // ojo: NO se calcula la vuelta/llegada del rival de forma local.
+      // su posición (x,y,angle,lap) llega por broadcast "pos", y quién
+      // terminó y con qué tiempo llega por el broadcast "finish" (más
+      // abajo). Así el resultado es el que manda cada jugador de su
+      // propia carrera, no un cálculo aproximado y con demora nuestro.
     }
-    checarVueltas(a, track, now);
   });
 
   // enviar mi posición si estoy online
@@ -1312,6 +1325,15 @@ function checarVueltas(a, track, now){
       a.finished = true;
       a.finishTime = now - race.startTime;
       race.finishedOrder.push(a);
+      // si soy yo (el jugador local) el que acaba de terminar en modo online,
+      // aviso a todos con MI tiempo real — así nadie tiene que adivinar
+      // cuándo terminé mirando mi posición con demora de red.
+      if(a.isPlayer && race.modo==="online" && S.online.channel){
+        S.online.channel.send({
+          type:"broadcast", event:"finish",
+          payload:{id:S.online.myId, finishTime:a.finishTime, nombre:S.user.username}
+        });
+      }
     }
   }
 }
