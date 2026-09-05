@@ -234,12 +234,8 @@ input{font-family:var(--texto);}
           <input type="text" id="loginUser" placeholder="Tu usuario" required maxlength="18">
         </div>
         <div class="field">
-          <label>Gmail</label>
-          <input type="email" id="loginEmail" placeholder="tuusuario@gmail.com" required>
-        </div>
-        <div class="field">
           <label>Contraseña</label>
-          <input type="password" id="loginPass" placeholder="••••••••" required>
+          <input type="password" id="loginPass" placeholder="Contraseña cualquiera" required>
         </div>
         <button type="submit" class="btn btn-primary btn-block">Entrar</button>
       </form>
@@ -250,13 +246,8 @@ input{font-family:var(--texto);}
           <input type="text" id="regUser" placeholder="Ej: Vito2016" required maxlength="18">
         </div>
         <div class="field">
-          <label>Gmail</label>
-          <input type="email" id="regEmail" placeholder="tuusuario@gmail.com" required>
-          <div class="field-err" id="regEmailErr"></div>
-        </div>
-        <div class="field">
           <label>Contraseña</label>
-          <input type="password" id="regPass" placeholder="Mínimo 6 caracteres" required minlength="6">
+          <input type="password" id="regPass" placeholder="Contraseña cualquiera" required>
         </div>
         <button type="submit" class="btn btn-primary btn-block">Crear cuenta y jugar</button>
       </form>
@@ -501,16 +492,18 @@ try{
 
 /* BLOQUE_SQL (pegar en el SQL editor de Supabase)
 -------------------------------------------------
-create table if not exists carreras_perfiles (
-  id uuid primary key references auth.users(id) on delete cascade,
-  username text not null,
-  email text not null,
+-- OJO: esto NO usa el sistema de Auth de Supabase (ese pide mail sí o sí).
+-- Es una tabla propia con usuario + contraseña, simple, para este juego.
+create table if not exists carreras_usuarios (
+  id uuid primary key default gen_random_uuid(),
+  username text unique not null,
+  password text not null,
   creado_en timestamp with time zone default now()
 );
 
 create table if not exists carreras_mejores_tiempos (
   id bigint generated always as identity primary key,
-  user_id uuid references auth.users(id) on delete cascade,
+  user_id uuid references carreras_usuarios(id) on delete cascade,
   pista_id text not null,
   tiempo_ms integer not null,
   ghost jsonb,
@@ -519,7 +512,7 @@ create table if not exists carreras_mejores_tiempos (
 
 create table if not exists carreras_campeonato (
   id bigint generated always as identity primary key,
-  user_id uuid references auth.users(id) on delete cascade,
+  user_id uuid references carreras_usuarios(id) on delete cascade,
   puntos integer not null default 0,
   carreras_corridas integer not null default 0,
   actualizado_en timestamp with time zone default now()
@@ -535,34 +528,35 @@ function lsGet(){ try{return JSON.parse(localStorage.getItem(LS_KEY))||{}; }catc
 function lsSet(d){ localStorage.setItem(LS_KEY, JSON.stringify(d)); }
 
 const DB = {
-  async registrar(username, email, pass){
+  async registrar(username, pass){
     if(supa){
-      const {data, error} = await supa.auth.signUp({email, password:pass});
+      const {data:existente} = await supa.from("carreras_usuarios").select("id").ilike("username", username).maybeSingle();
+      if(existente) return {error:"Ese usuario ya existe, elegí otro."};
+      const {data, error} = await supa.from("carreras_usuarios").insert({username, password:pass}).select().single();
       if(error) return {error: error.message};
-      if(data.user){
-        await supa.from("carreras_perfiles").insert({id:data.user.id, username, email});
-      }
-      return {user:{id:(data.user? data.user.id:email), username, email}};
+      return {user:{id:data.id, username:data.username}};
     }else{
       const d = lsGet();
       d.usuarios = d.usuarios || {};
-      if(d.usuarios[email]) return {error:"Ese Gmail ya está registrado."};
-      d.usuarios[email] = {username, email, pass};
+      const clave = username.toLowerCase();
+      if(d.usuarios[clave]) return {error:"Ese usuario ya existe, elegí otro."};
+      const id = "local_"+clave;
+      d.usuarios[clave] = {id, username, pass};
       lsSet(d);
-      return {user:{id:email, username, email}};
+      return {user:{id, username}};
     }
   },
-  async login(email, pass){
+  async login(username, pass){
     if(supa){
-      const {data, error} = await supa.auth.signInWithPassword({email, password:pass});
-      if(error) return {error: error.message};
-      const {data:perfil} = await supa.from("carreras_perfiles").select("*").eq("id", data.user.id).single();
-      return {user:{id:data.user.id, username:(perfil? perfil.username : email.split("@")[0]), email}};
+      const {data, error} = await supa.from("carreras_usuarios").select("*").ilike("username", username).maybeSingle();
+      if(error || !data) return {error:"Usuario o contraseña incorrectos."};
+      if(data.password !== pass) return {error:"Usuario o contraseña incorrectos."};
+      return {user:{id:data.id, username:data.username}};
     }else{
       const d = lsGet();
-      const u = d.usuarios && d.usuarios[email];
-      if(!u || u.pass !== pass) return {error:"Gmail o contraseña incorrectos."};
-      return {user:{id:email, username:u.username, email}};
+      const u = d.usuarios && d.usuarios[username.toLowerCase()];
+      if(!u || u.pass !== pass) return {error:"Usuario o contraseña incorrectos."};
+      return {user:{id:u.id, username:u.username}};
     }
   },
   async guardarMejorTiempo(userId, pistaId, tiempoMs, ghost){
@@ -692,7 +686,7 @@ function handleGo(dest){
   if(dest==="trial"){ S.modo="trial"; abrirSeleccion("Trial — elegí corredor y pista"); return; }
   if(dest==="online"){ S.modo="online"; abrirSeleccion("Online — elegí tu corredor y pista", true); return; }
   if(dest==="directa"){ S.modo="directa"; iniciarCarrera(); return; }
-  if(dest==="config"){ document.getElementById("cfgUserLabel").textContent = S.user? S.user.email : "Invitado"; goto("config"); return; }
+  if(dest==="config"){ document.getElementById("cfgUserLabel").textContent = S.user? ("Usuario: "+S.user.username) : "Invitado"; goto("config"); return; }
   if(dest==="tutorial"){ goto("tutorial"); return; }
 }
 
@@ -712,18 +706,14 @@ function showAuthMsg(txt, tipo){
   el.textContent = txt;
   el.className = "auth-msg" + (txt? " show":"") + (tipo? " "+tipo:"");
 }
-function esGmail(v){ return /^[^\s@]+@gmail\.com$/i.test(v.trim()); }
 
 document.getElementById("formRegistro").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const username = document.getElementById("regUser").value.trim();
-  const email = document.getElementById("regEmail").value.trim();
   const pass = document.getElementById("regPass").value;
-  const errEl = document.getElementById("regEmailErr");
-  errEl.textContent="";
-  if(!esGmail(email)){ errEl.textContent="Tiene que ser un Gmail (terminado en @gmail.com)."; return; }
+  if(!username){ showAuthMsg("Escribí un nombre de usuario.", "err"); return; }
   showAuthMsg("Creando cuenta…");
-  const r = await DB.registrar(username, email, pass);
+  const r = await DB.registrar(username, pass);
   if(r.error){ showAuthMsg(r.error, "err"); return; }
   S.user = r.user;
   S.invitado = false;
@@ -735,27 +725,16 @@ document.getElementById("formRegistro").addEventListener("submit", async (e)=>{
 document.getElementById("formLogin").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const username = document.getElementById("loginUser").value.trim();
-  const email = document.getElementById("loginEmail").value.trim();
   const pass = document.getElementById("loginPass").value;
 
   if(!username){
     showAuthMsg("Escribí tu nombre de usuario.", "err");
     return;
   }
-  if(!esGmail(email)){
-    showAuthMsg("Tiene que ser un Gmail (terminado en @gmail.com).", "err");
-    return;
-  }
 
   showAuthMsg("Ingresando…");
-  const r = await DB.login(email, pass);
+  const r = await DB.login(username, pass);
   if(r.error){ showAuthMsg(r.error, "err"); return; }
-
-  // También comprobamos el usuario para evitar entrar con datos mezclados.
-  if(r.user.username.toLowerCase() !== username.toLowerCase()){
-    showAuthMsg("El usuario no coincide con ese Gmail.", "err");
-    return;
-  }
 
   S.user = r.user;
   S.invitado = false;
@@ -767,15 +746,14 @@ document.getElementById("formLogin").addEventListener("submit", async (e)=>{
 document.getElementById("btnInvitado").addEventListener("click", ()=>{
   localStorage.removeItem(SESSION_KEY);
   S.invitado = true;
-  S.user = {id:"invitado_"+Math.random().toString(36).slice(2,8), username:"Invitado", email:null};
+  S.user = {id:"invitado_"+Math.random().toString(36).slice(2,8), username:"Invitado"};
   entrarAlMenu();
 });
 
-document.getElementById("btnLogout").addEventListener("click", async ()=>{
+document.getElementById("btnLogout").addEventListener("click", ()=>{
   S.user = null;
   S.invitado = false;
   localStorage.removeItem(SESSION_KEY);
-  if(supa) await supa.auth.signOut();
   goto("auth");
 });
 
@@ -789,11 +767,10 @@ function entrarAlMenu(){
 const SESSION_KEY = "apexcircuit_session_v1";
 
 function guardarSesionLocal(user){
-  if(!user || !user.id || !user.username || !user.email) return;
+  if(!user || !user.id || !user.username) return;
   localStorage.setItem(SESSION_KEY, JSON.stringify({
     id:user.id,
-    username:user.username,
-    email:user.email
+    username:user.username
   }));
 }
 
@@ -803,35 +780,9 @@ function borrarSesionLocal(){
 
 async function restaurarSesion(){
   // Invitados nunca quedan logueados automáticamente.
-  if(supa){
-    try{
-      const {data} = await supa.auth.getSession();
-      if(data && data.session && data.session.user){
-        const authUser = data.session.user;
-        const {data:perfil} = await supa
-          .from("carreras_perfiles")
-          .select("*")
-          .eq("id", authUser.id)
-          .single();
-
-        S.user = {
-          id:authUser.id,
-          username:perfil?.username || authUser.email.split("@")[0],
-          email:authUser.email
-        };
-        S.invitado = false;
-        entrarAlMenu();
-        return;
-      }
-    }catch(err){
-      console.warn("No se pudo restaurar la sesión de Supabase:", err);
-    }
-  }
-
-  // Fallback local: solo restauramos los datos públicos del usuario.
   try{
     const guardada = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
-    if(guardada && guardada.id && guardada.username && guardada.email){
+    if(guardada && guardada.id && guardada.username){
       S.user = guardada;
       S.invitado = false;
       entrarAlMenu();
