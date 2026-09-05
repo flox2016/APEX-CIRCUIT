@@ -306,6 +306,12 @@ input{font-family:var(--texto);}
       <div class="driver-grid" id="driverGrid"></div>
       <div class="sel-group-title">Pista</div>
       <div class="track-grid" id="trackGrid"></div>
+      <div class="sel-group-title">Vueltas</div>
+      <div class="row-gap" style="align-items:center;max-width:220px;">
+        <button class="btn btn-outline" id="btnLapsMenos" style="width:44px;">−</button>
+        <div style="flex:1;text-align:center;font-family:var(--display);font-size:30px;" id="lapsValor">3</div>
+        <button class="btn btn-outline" id="btnLapsMas" style="width:44px;">+</button>
+      </div>
     </div>
     <div class="sel-footer">
       <button class="btn btn-outline flex1" data-go="menu">Cancelar</button>
@@ -667,6 +673,7 @@ const S = {
   modo:null,           // 'jugar' | 'trial' | 'online' | 'directa'
   driver:DRIVERS[0],
   track:TRACKS[0],
+  customLaps:3,         // vueltas elegidas por el jugador (1 a 10)
   championshipStep:0,  // en modo 'jugar', índice de carrera dentro del campeonato
   championshipOrder:[],// orden de pistas del campeonato actual
   online:{code:null, channel:null, isHost:false, players:[], myId:null}
@@ -849,11 +856,25 @@ function abrirSeleccion(titulo, esOnline){
   document.getElementById("selTitle").textContent = titulo;
   selVaOnline = !!esOnline;
   renderSelect();
+  actualizarLapsUI();
   goto("select");
 }
 document.getElementById("btnStartRace").addEventListener("click", ()=>{
   if(selVaOnline){ abrirLobby(); }
   else{ iniciarCarrera(); }
+});
+
+/* ---------- selector de vueltas ---------- */
+function actualizarLapsUI(){
+  document.getElementById("lapsValor").textContent = S.customLaps;
+}
+document.getElementById("btnLapsMenos").addEventListener("click", ()=>{
+  S.customLaps = Math.max(1, S.customLaps-1);
+  actualizarLapsUI();
+});
+document.getElementById("btnLapsMas").addEventListener("click", ()=>{
+  S.customLaps = Math.min(10, S.customLaps+1);
+  actualizarLapsUI();
 });
 
 /* ---------- CAMPEONATO ---------- */
@@ -980,6 +1001,7 @@ function lanzarCarreraOnline(){
   const track = S.track;
   const payload = {
     trackId:track.id,
+    laps:S.customLaps,
     jugadores:[...S.online.players],
     seed:Date.now()
   };
@@ -998,6 +1020,7 @@ function lanzarCarreraOnline(){
 
 function iniciarCarreraOnline(payload){
   S.track = TRACKS.find(t=>t.id===payload.trackId) || S.track;
+  S.customLaps = payload.laps || S.customLaps; // todos corren la misma cantidad de vueltas
   iniciarCarrera(payload.jugadores);
 }
 
@@ -1227,7 +1250,7 @@ function iniciarCarrera(jugadoresOnline){
 
   race = {
     track, autos, player,
-    laps: track.laps,
+    laps: S.customLaps,
     startTime: performance.now(),
     lapStartTime: performance.now(),
     countdown: COUNTDOWN_DUR,
@@ -1394,6 +1417,43 @@ function puntoEnRect(p, r){
 }
 
 function updateAutoIA(a, dt, track){
+  const pb = track.pitBox;
+
+  // si se le gastaron las gomas, decide ir a boxes solo
+  if(!a.enBoxesIA && a.tireWear > 0.72){
+    a.enBoxesIA = true;
+  }
+
+  if(a.enBoxesIA){
+    const centro = {x:pb.x+pb.w/2, y:pb.y+pb.h/2};
+    const dx = centro.x-a.x, dy = centro.y-a.y;
+    const dist = Math.hypot(dx,dy);
+    const targetAngle = Math.atan2(dy,dx);
+    let diff = targetAngle - a.angle;
+    while(diff>Math.PI) diff-=Math.PI*2;
+    while(diff<-Math.PI) diff+=Math.PI*2;
+    a.angle += Math.max(-3.2*dt, Math.min(3.2*dt, diff*4*dt));
+
+    // frena a medida que se acerca al punto de destino: si no, pasa de largo
+    // una y otra vez y termina dando vueltas alrededor de los boxes sin parar
+    const MAXV_BOX = Math.min(90, dist*1.5);
+    a.speed += (MAXV_BOX-a.speed)*dt*2.2;
+    a.x += Math.cos(a.angle)*a.speed*dt;
+    a.y += Math.sin(a.angle)*a.speed*dt;
+
+    if(dist < 14){
+      a.speed *= 0.7; // se queda casi detenido mientras le cambian las gomas
+      a.tireWear = Math.max(0, a.tireWear - dt*0.6);
+      if(a.tireWear <= 0.02){
+        a.enBoxesIA = false;
+        // retoma la carrera apuntando un poco más adelante en la pista
+        const near = nearestOnTrack({x:a.x,y:a.y}, track.center);
+        a.aiTargetIndex = (near.index+3)%track.center.length;
+      }
+    }
+    return;
+  }
+
   const target = track.center[a.aiTargetIndex];
   const dx = target.x-a.x, dy = target.y-a.y;
   const distT = Math.hypot(dx,dy);
